@@ -13,43 +13,31 @@
 start_link() ->
     net_kernel:connect_node('node1@127.0.0.1'),
     net_kernel:connect_node('node2@127.0.0.1'),
+    net_kernel:connect_node('node3@127.0.0.1'),
 
     Nodes = erlang:nodes(),
     io:format("Nodes: ~p~n", [Nodes]),
 
-    Pid = global:whereis_name(server),
-    io:format("Server pid: ~p~n", [Pid]),
-    case Pid of
-        undefined ->
-            {_, ServerPid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [], []),
-            io:format("Server pid ~p ~n", [ServerPid]),
-            global:register_name(server, ServerPid);
-        _ ->
-            {_, ServerPid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [], []),
-            io:format("Server pid ~p ~n", [ServerPid]),
-            % global:register_name(player, ServerPid),
-            OtherNumber = gen_server:call(Pid, {register, self()}),
-            io:format("OtherNumber: ~p~n", [OtherNumber]),
-            MyNumber = rand:uniform(100),
-            io:format("MyNumber: ~p~n", [MyNumber]),
-            if MyNumber > OtherNumber ->
-                   global:register_name(player, ServerPid),
-                   global:re_register_name(server, Pid);
-               true ->
-                   global:register_name(player, Pid),
-                   global:register_name(server, ServerPid)
-            end,
-            gen_server:cast(ServerPid, {make_first_move, Pid})
-    end,
-
+    Suffix = rand:uniform(100),
+    PlayerName = list_to_binary("player" ++ integer_to_list(Suffix)),
+    io:format("Player name: ~p~n", [PlayerName]),
+    {_, ServerPid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [], []),
+    io:format("Server pid ~p ~n", [ServerPid]),
+    global:register_name(PlayerName, ServerPid),
     {ok, ServerPid}.
+
+%% Helper Function
+schedule_work() ->
+    %% Schedule a `work` message after 1000 milliseconds (1 second)
+    erlang:send_after(1000, self(), work).
 
 %% Genserver callbacks
 init(Board) ->
+    % generete suffix for the player name
+    schedule_work(),
     {ok, Board}.
 
-handle_call({register, _}, _From, Board) ->
-    io:format("Registered.~n"),
+handle_call({ask_for_number, _}, _From, Board) ->
     % decide who plays first
     rand:seed(default),
     Random = rand:uniform(100),
@@ -66,9 +54,11 @@ handle_cast({make_first_move, Pid}, _Board) ->
     io:format("First move made.~n"),
     io:format("Board: ~p~n", [NewBoard]),
 
-    loop_game(NewBoard, Pid),
-    % io:format("Response: ~p~n", [Resposne]),
+    Result = loop_game(NewBoard, Pid),
+    io:format("Response: ~p~n", [Result]),
     {noreply, NewBoard};
+handle_cast(reset, _Board) ->
+    {noreply, []};
 handle_cast(_Msg, Board) ->
     {noreply, Board}.
 
@@ -81,11 +71,42 @@ loop_game(Board, Pid) ->
     % Response = play_turn(Board, y),
     % io:format("Response: ~p~n", [Response]),
     NewBoard2 = play_turn(Response, x),
+
     io:format("NewBoard: ~p~n", [NewBoard2]),
     loop_game(NewBoard2, Pid).
 
-handle_info(_Info, Board) ->
-    {noreply, Board}.
+handle_info(work, State) ->
+    %% Perform the periodic task
+    io:format("Periodic task executed at ~p~n", [erlang:now()]),
+
+    Nodes = global:registered_names(),
+    io:format("Nodes: ~p~n", [Nodes]),
+    if length(Nodes) == 2 ->
+           io:format("Both players are registered.~n"),
+           Player1 = lists:nth(1, Nodes),
+           Player2 = lists:nth(2, Nodes),
+           io:format("Player1: ~p, Player2: ~p~n", [Player1, Player2]),
+           if Player1 == Player2 ->
+                  io:format("Both players are the same.~n"),
+                  ok;
+              true ->
+                  ok
+           end,
+
+           Player1Pid = global:whereis_name(Player1),
+           Player2Pid = global:whereis_name(Player2),
+
+           if self() == Player1Pid ->
+                  gen_server:cast(Player2Pid, {make_first_move, Player1Pid});
+              true ->
+                  gen_server:cast(Player1Pid, {make_first_move, Player2Pid})
+           end;
+       true ->
+           io:format("Not all players are registered.~n")
+    end,
+    %% Schedule the next execution
+    schedule_work(),
+    {noreply, State}.
 
 terminate(_Reason, _State) ->
     ok.
@@ -186,10 +207,8 @@ generate_move(Board, Counter) when Counter < 10 ->
         _ ->
             generate_move(Board, Counter + 1)
     end;
-
 generate_move(_, _) ->
     {no_move, no_move}.
-
 
 check_winner(Board) ->
     io:format("Checking winner.~n"),
@@ -203,6 +222,9 @@ check_winner(Board) ->
             check_columns(Board)
     end.
 
+
+check_columns(ok) ->
+    ok;
 check_columns(Board) ->
     check_columns(Board, 1).
 
@@ -235,7 +257,8 @@ check_column(Board, Col) ->
         _ ->
             none
     end.
-
+check_rows(ok) ->
+    ok; 
 check_rows(Board) ->
     io:format("Checking rows.~n"),
     io:format("Board: ~p~n", [Board]),
